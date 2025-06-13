@@ -4,12 +4,18 @@ import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from peft import PeftModel
 import uvicorn
+from functools import lru_cache
 
 app = FastAPI(
     title="Car Price Prediction API",
     description="API pour prédire les prix des voitures",
     version="1.0.0"
 )
+
+# Configuration
+base_model_name = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+adapter_path = "./car_price_model_final"
+device = "cuda" if torch.cuda.is_available() else "cpu"
 
 class PredictionRequest(BaseModel):
     prompt: str
@@ -31,36 +37,35 @@ class PredictionResponse(BaseModel):
             }
         }
 
-# Chargement du modèle au démarrage
-print("Chargement du modèle...")
+@lru_cache(maxsize=1)
+def get_tokenizer():
+    tokenizer = AutoTokenizer.from_pretrained(base_model_name)
+    tokenizer.pad_token = tokenizer.eos_token
+    return tokenizer
 
-# Configuration
-base_model_name = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
-adapter_path = "./car_price_model_final"
-device = "cuda" if torch.cuda.is_available() else "cpu"
-
-# Chargement du tokenizer
-tokenizer = AutoTokenizer.from_pretrained(base_model_name)
-tokenizer.pad_token = tokenizer.eos_token
-
-# Chargement du modèle de base
-model = AutoModelForCausalLM.from_pretrained(
-    base_model_name,
-    torch_dtype=torch.float16,
-    device_map="auto"
-)
-
-# Chargement des adaptateurs LoRA
-model = PeftModel.from_pretrained(
-    model,
-    adapter_path,
-    torch_dtype=torch.float16,
-    device_map="auto"
-)
-
-print(f"Modèle chargé avec succès! Utilisation de : {device}")
+@lru_cache(maxsize=1)
+def get_model():
+    # Chargement du modèle de base
+    model = AutoModelForCausalLM.from_pretrained(
+        base_model_name,
+        torch_dtype=torch.float16,
+        device_map="auto"
+    )
+    
+    # Chargement des adaptateurs LoRA
+    model = PeftModel.from_pretrained(
+        model,
+        adapter_path,
+        torch_dtype=torch.float16,
+        device_map="auto"
+    )
+    return model
 
 def generate_prediction(prompt: str) -> str:
+    # Chargement lazy du tokenizer et du modèle
+    tokenizer = get_tokenizer()
+    model = get_model()
+    
     # Préparation du prompt
     input_text = f"<|system|>You are a car price prediction assistant.</s><|user|>{prompt}</s><|assistant|>"
     inputs = tokenizer(input_text, return_tensors="pt").to(device)
@@ -105,9 +110,16 @@ async def health_check():
     """
     return {
         "status": "healthy",
-        "model": "loaded",
+        "model": "ready",
         "device": device
     }
 
 if __name__ == "__main__":
-    uvicorn.run("api:app", host="0.0.0.0", port=8000, reload=False) 
+    uvicorn.run(
+        "api:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=False,
+        timeout_keep_alive=120,
+        timeout_graceful_shutdown=120
+    ) 
