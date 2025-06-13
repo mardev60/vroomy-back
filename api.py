@@ -5,17 +5,26 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 from peft import PeftModel
 import uvicorn
 from functools import lru_cache
+import os
+import multiprocessing
+
+# Configuration
+base_model_name = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+adapter_path = "./car_price_model_final"
+device = "cuda" if torch.cuda.is_available() else "cpu"
+
+# Configuration du nombre de workers
+NUM_WORKERS = min(8, multiprocessing.cpu_count())  # Utilise jusqu'à 8 workers
+
+# Configuration de la mémoire
+torch.cuda.empty_cache() if torch.cuda.is_available() else None
+torch.set_num_threads(NUM_WORKERS)
 
 app = FastAPI(
     title="Car Price Prediction API",
     description="API pour prédire les prix des voitures",
     version="1.0.0"
 )
-
-# Configuration
-base_model_name = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
-adapter_path = "./car_price_model_final"
-device = "cuda" if torch.cuda.is_available() else "cpu"
 
 class PredictionRequest(BaseModel):
     prompt: str
@@ -39,17 +48,27 @@ class PredictionResponse(BaseModel):
 
 @lru_cache(maxsize=1)
 def get_tokenizer():
-    tokenizer = AutoTokenizer.from_pretrained(base_model_name)
+    tokenizer = AutoTokenizer.from_pretrained(
+        base_model_name,
+        num_workers=NUM_WORKERS
+    )
     tokenizer.pad_token = tokenizer.eos_token
     return tokenizer
 
 @lru_cache(maxsize=1)
 def get_model():
+    # Configuration pour optimiser l'utilisation de la mémoire
+    model_kwargs = {
+        "torch_dtype": torch.float16,
+        "device_map": "auto",
+        "low_cpu_mem_usage": True,
+        "max_memory": {0: "6GB"} if torch.cuda.is_available() else None
+    }
+    
     # Chargement du modèle de base
     model = AutoModelForCausalLM.from_pretrained(
         base_model_name,
-        torch_dtype=torch.float16,
-        device_map="auto"
+        **model_kwargs
     )
     
     # Chargement des adaptateurs LoRA
@@ -59,6 +78,9 @@ def get_model():
         torch_dtype=torch.float16,
         device_map="auto"
     )
+    
+    # Optimisation de la mémoire
+    model.eval()
     return model
 
 def generate_prediction(prompt: str) -> str:
@@ -70,7 +92,7 @@ def generate_prediction(prompt: str) -> str:
     input_text = f"<|system|>You are a car price prediction assistant.</s><|user|>{prompt}</s><|assistant|>"
     inputs = tokenizer(input_text, return_tensors="pt").to(device)
     
-    # Génération de la réponse
+    # Génération de la réponse avec des paramètres optimisés
     with torch.no_grad():
         outputs = model.generate(
             **inputs,
@@ -78,7 +100,9 @@ def generate_prediction(prompt: str) -> str:
             num_return_sequences=1,
             temperature=0.7,
             do_sample=True,
-            pad_token_id=tokenizer.eos_token_id
+            pad_token_id=tokenizer.eos_token_id,
+            num_beams=1,  # Réduit l'utilisation de la mémoire
+            use_cache=True
         )
     
     # Décodage et nettoyage de la réponse
@@ -111,15 +135,21 @@ async def health_check():
     return {
         "status": "healthy",
         "model": "ready",
-        "device": device
+        "device": device,
+        "workers": NUM_WORKERS,
+        "memory_allocated": f"{torch.cuda.memory_allocated() / 1024**2:.2f}MB" if torch.cuda.is_available() else "N/A"
     }
 
 if __name__ == "__main__":
-    uvicorn.run(
+    # Configuration du serveur pour utiliser les workers
+    config = uvicorn.Config(
         "api:app",
         host="0.0.0.0",
-        port=8000,
-        reload=False,
+        port=int(os.getenv("PORT", 8000)),
+        workers=NUM_WORKERS,
         timeout_keep_alive=120,
-        timeout_graceful_shutdown=120
-    ) 
+        timeout_graceful_shutdown=120,
+        log_level="info"
+    )
+    server = uvicorn.Server(config)
+    server.run() 
