@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import torch
@@ -7,6 +8,15 @@ import json
 from peft import LoraConfig, PeftModel
 
 app = FastAPI(title="Model API", description="API pour le modèle fine-tuné avec LoRA")
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows all origins
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods
+    allow_headers=["*"],  # Allows all headers
+)
 
 # Configuration
 BASE_MODEL_PATH = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
