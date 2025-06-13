@@ -26,6 +26,17 @@ app = FastAPI(
     version="1.0.0"
 )
 
+# Configuration CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # En production, spécifiez les origines exactes
+    allow_credentials=True,
+    allow_methods=["*"],  # Permet toutes les méthodes
+    allow_headers=["*"],  # Permet tous les headers
+    expose_headers=["*"],
+    max_age=3600,
+)
+
 class PredictionRequest(BaseModel):
     prompt: str
     
